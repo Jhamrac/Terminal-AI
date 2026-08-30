@@ -1,0 +1,6 @@
+{
+  "name": "AI PowerShell & Command Terminal",
+  "description": "An AI-powered Windows PowerShell and Command Prompt terminal emulator featuring natural language command translation, script generation, error diagnostics, auto-completion, and a virtual Windows file system environment.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
