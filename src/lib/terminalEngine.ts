@@ -1029,7 +1029,39 @@ AI COMMANDS:
     };
   }
 
-  // UNKNOWN COMMAND -> Generate Error & Offer AI Diagnosis Trigger
+  // UNKNOWN COMMAND -> Try Native OS Execution via Desktop Backend API or Offer AI Diagnosis
+  try {
+    const nativeRes = await fetch('/api/native/execute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command: trimmed, mode, cwd: currentCwd })
+    });
+    const nativeData = await nativeRes.json();
+
+    if (nativeData.executed && (nativeData.stdout || nativeData.stderr)) {
+      const outputLines: TerminalLine[] = [];
+      if (nativeData.stdout) {
+        outputLines.push({
+          id: crypto.randomUUID(),
+          type: 'stdout',
+          text: nativeData.stdout,
+          timestamp
+        });
+      }
+      if (nativeData.stderr) {
+        outputLines.push({
+          id: crypto.randomUUID(),
+          type: 'stderr',
+          text: nativeData.stderr,
+          timestamp
+        });
+      }
+      return { lines: outputLines };
+    }
+  } catch (e) {
+    // API unavailable or browser mode
+  }
+
   const errorMsg = mode === 'cmd'
     ? `'${cmd}' is not recognized as an internal or external command,\noperable program or batch file.`
     : `${cmd} : The term '${cmd}' is not recognized as the name of a cmdlet, function, script file, or operable program. Check the spelling of the name, or if a path was included, verify that the path is correct and try again.\nAt line:1 char:1\n+ ${trimmed}\n+ ~${'~'.repeat(cmd.length - 1)}`;

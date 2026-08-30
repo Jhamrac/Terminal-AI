@@ -4,6 +4,7 @@ import os from "os";
 import net from "net";
 import dgram from "dgram";
 import dns from "dns";
+import { exec } from "child_process";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 
@@ -214,43 +215,97 @@ if __name__ == "__main__":
 
   // PowerShell Script Agent
   const psScript = `# PowerShell Local Physical Hardware Agent
-$AppUrl = "${appUrl}/api/agent/telemetry"
+# Run with: powershell -ExecutionPolicy Bypass -File .\\Agent.ps1
+
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$ErrorActionPreference = "SilentlyContinue"
 
 Write-Host "=========================================================" -ForegroundColor Cyan
 Write-Host " AI Terminal Copilot - Physical Local Hardware Agent      " -ForegroundColor Green
 Write-Host "=========================================================" -ForegroundColor Cyan
 
+$AppUrl = "${appUrl}/api/agent/telemetry"
 $hostname = $env:COMPUTERNAME
+if (-not $hostname) { $hostname = [System.Net.Dns]::GetHostName() }
 $platform = "win32"
 $arch = $env:PROCESSOR_ARCHITECTURE
 
-# Get Real Physical Local IP Interfaces
-$ipAddresses = Get-NetIPAddress -AddressFamily IPv4 | Select-Object InterfaceAlias, IPAddress, PrefixLength
+# Safely query IPv4 Addresses
+$ipList = @()
+try {
+    $netAddrs = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -ne '127.0.0.1' }
+    foreach ($addr in $netAddrs) {
+        $ipList += @{
+            InterfaceAlias = $addr.InterfaceAlias
+            IPAddress = $addr.IPAddress
+            PrefixLength = $addr.PrefixLength
+        }
+    }
+} catch {}
+
+if ($ipList.Count -eq 0) {
+    try {
+        $dnsIps = [System.Net.Dns]::GetHostAddresses($hostname) | Where-Object { $_.AddressFamily -eq 'InterNetwork' }
+        foreach ($ip in $dnsIps) {
+            $ipList += @{ InterfaceAlias = "Ethernet"; IPAddress = $ip.IPAddressToString; PrefixLength = 24 }
+        }
+    } catch {}
+}
+
+if ($ipList.Count -eq 0) {
+    $ipList += @{ InterfaceAlias = "Loopback"; IPAddress = "127.0.0.1"; PrefixLength = 8 }
+}
+
+$primaryIp = $ipList[0].IPAddress
 
 $data = @{
     hostname = $hostname
     platform = $platform
     arch = $arch
-    networkInterfaces = $ipAddresses
+    networkInterfaces = @{ "PhysicalAdapters" = $ipList }
     bacnetDevices = @(
-        @{ id = "1001"; name = "$hostname-BACnet-Adapter"; ip = "$($ipAddresses[0].IPAddress)"; vendor = "Physical Windows BACnet Node" }
+        @{ id = "1001"; name = "$hostname-BACnet-Node"; ip = $primaryIp; vendor = "Physical Windows BACnet Host" }
     )
     niagaraStations = @(
-        @{ name = "$hostname-JACE"; ip = "127.0.0.1"; foxPort = 1911; version = "4.12" }
+        @{ name = "$hostname-LocalJACE"; ip = $primaryIp; foxPort = 1911; version = "4.12" }
     )
 } | ConvertTo-Json -Depth 5
 
-Write-Host "[+] Transmitting physical local network interfaces to AI Terminal server..." -ForegroundColor Yellow
+Write-Host "[+] Transmitting local network interfaces ($primaryIp) to AI Terminal..." -ForegroundColor Yellow
+
 try {
-    $response = Invoke-RestMethod -Uri $AppUrl -Method Post -Body $data -ContentType "application/json"
-    Write-Host "[+] Successfully Paired Real Machine! Telemetry Status: $($response.message)" -ForegroundColor Green
+    $response = Invoke-RestMethod -Uri $AppUrl -Method Post -Body $data -ContentType "application/json" -UseBasicParsing
+    Write-Host "[+] SUCCESSFULLY PAIRED REAL MACHINE!" -ForegroundColor Green
+    Write-Host "[+] Telemetry Status: $($response.message)" -ForegroundColor Green
+    Write-Host "[+] Timestamp: $($response.timestamp)" -ForegroundColor Gray
 } catch {
     Write-Host "[-] Connection error: $_" -ForegroundColor Red
+    Write-Host "[-] Note: Ensure your firewall allows outbound HTTP/HTTPS requests." -ForegroundColor Yellow
 }
 `;
   res.setHeader("Content-Type", "application/x-powershell");
   res.setHeader("Content-Disposition", "attachment; filename=Agent.ps1");
   res.send(psScript);
+});
+
+// 7. Native OS Shell Command Execution Endpoint (When running desktop app)
+app.post("/api/native/execute", (req, res) => {
+  const { command, mode, cwd } = req.body;
+  if (!command) {
+    return res.status(400).json({ error: "Command is required" });
+  }
+
+  const shellToUse = mode === "cmd" ? "cmd.exe /c" : "powershell.exe -NoProfile -Command";
+  const fullCmd = `${shellToUse} "${command.replace(/"/g, '\\"')}"`;
+
+  exec(fullCmd, { cwd: cwd || process.cwd(), timeout: 30000, maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
+    res.json({
+      stdout: stdout || "",
+      stderr: stderr || (error ? error.message : ""),
+      exitCode: error ? error.code || 1 : 0,
+      executed: true
+    });
+  });
 });
 
 // API Route: Translate Natural Language to PowerShell/CMD Command
